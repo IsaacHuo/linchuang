@@ -131,7 +131,8 @@ def issue_rows(result, case):
 
 def stats_md(result, log, issues):
     errors = sum(1 for i in issues if i[0] == "error")
-    return (f"模式 **{log['mode']}** ｜ 状态 **{result['status']}** ｜ 模型调用 {log['model_calls']} 次 ｜ "
+    return (f"结果病例 **{html.escape(result['case_id'])}** ｜ 模式 **{log['mode']}** ｜ 状态 **{result['status']}** ｜ "
+            f"模型调用 {log['model_calls']} 次 ｜ "
             f"耗时 {log['duration_s']} s ｜ 规则错误 {errors} 条、提示 {len(issues) - errors} 条")
 
 
@@ -149,6 +150,20 @@ def on_pick(cid):
     if not case:
         return gr.update(), gr.update(), gr.update()
     return cid, case_to_text(case), sources_html(case)
+
+
+def clear_results():
+    generated = ("", [], [], "", "")
+    compared = ("", "", [], "", "", [])
+    return (*generated, *compared)
+
+
+def on_edit(cid, text):
+    try:
+        case = text_to_case(text, cid)
+    except gr.Error:
+        return "", *clear_results()
+    return sources_html(case), *clear_results()
 
 
 def on_generate(cid, text, mode, model, endpoint):
@@ -212,7 +227,8 @@ def build_ui():
                                            wrap=True, interactive=False)
                         with gr.Accordion("原始 JSON 输出", open=False):
                             raw = gr.Code(language="json")
-                go.click(on_generate, [cid, text, mode, model, endpoint], [src_view, rec, ev, iss, stats, raw])
+                generation = go.click(on_generate, [cid, text, mode, model, endpoint],
+                                      [src_view, rec, ev, iss, stats, raw], concurrency_id="case")
             with gr.Tab("基线 vs 改进 对比"):
                 gr.Markdown("同一病例、同一模型分别运行 baseline 与 improved，用同一套规则复检。")
                 cmp_go = gr.Button("运行对比", variant="primary")
@@ -223,8 +239,14 @@ def build_ui():
                             gr.Markdown(f"## {MODE_LABELS[mode_name]}")
                             cols += [gr.Markdown(), gr.Markdown(),
                                      gr.Dataframe(headers=ISSUE_HEADERS, label="规则校验", wrap=True, interactive=False)]
-                cmp_go.click(on_compare, [cid, text, model, endpoint], cols)
-        pick.change(on_pick, pick, [cid, text, src_view])
+                comparison = cmp_go.click(on_compare, [cid, text, model, endpoint], cols, concurrency_id="case")
+        result_components = [rec, ev, iss, stats, raw, *cols]
+        pending = [generation, comparison]
+        pick.change(lambda value: (*on_pick(value), *clear_results()), pick,
+                    [cid, text, src_view, *result_components], concurrency_id="case", cancels=pending)
+        for field in (cid, text):
+            field.input(on_edit, inputs=[cid, text], outputs=[src_view, *result_components],
+                        concurrency_id="case", cancels=pending)
     return ui
 
 

@@ -54,8 +54,11 @@ def normalize_record(rec: dict, case: dict, max_review_items: int = 10, augment_
         seen.add(stmt)
         evidence.append({"statement": stmt, "source_ids": ids, "kind": kind})
     if len(evidence) > 5:
-        fixes.append(f"evidence {len(evidence)} 条，截取前 5 条")
+        fixes.append(f"evidence {len(evidence)} 条，保留前 5 条并保留至少一条已有推断")
+        first_inference = next((item for item in evidence if item["kind"] == "inference"), None)
         evidence = evidence[:5]
+        if first_inference and all(item["kind"] == "fact" for item in evidence):
+            evidence[-1] = first_inference
     out["evidence"] = evidence
 
     raw_rv = rec.get("review_items")
@@ -123,10 +126,6 @@ _NEG_PREFIX = re.compile(r"(?:未|不|尚|待|需|以|能否|可否|无法|难�
 _NORMAL_WORDS = r"(?:正常|无异常|未见异常|阴性|无明显异常|无特殊)"
 
 
-def _clauses(text: str):
-    return [c for c in re.split(r"[。；;\n]", text) if c.strip()]
-
-
 def content_issues(rec: dict, case: dict) -> list:
     """在 schema 通过（至少字段类型正确）的记录上做内容规则检查。"""
     issues = []
@@ -149,10 +148,10 @@ def content_issues(rec: dict, case: dict) -> list:
                 issues.append(issue("UNIT_MISMATCH", "warn", field, f"数值\u201c{raw.strip()}\u201d的单位与资料不一致"))
     # 2) 时序回溯：病例特点中的病程时间须来自资料
     for num, unit, raw in find_time_spans(texts["case_features"]):
-        if (num, unit) not in src_times and num not in src_nums:
+        if (num, unit) not in src_times:
             issues.append(issue("TIME_NOT_IN_SOURCE", "error", "case_features", f"时间表述\u201c{raw}\u201d在资料中不存在"))
     # 3) 计划不得写成已实施
-    for clause in _clauses(texts["plan"]):
+    for clause in re.split(r"[，,。；;\n]", texts["plan"]):
         m = _IMPLEMENTED.search(clause)
         if m and not _PRIOR_CONTEXT.search(clause) and clause.strip() not in src_text:
             issues.append(issue("PLAN_AS_DONE", "error", "plan", f"计划中出现已实施表述：\u201c{clause.strip()[:40]}\u201d"))
@@ -209,6 +208,11 @@ def issue_score(issues) -> int:
 
 def has_hard_errors(issues) -> bool:
     return any(i["severity"] == "error" and i["code"] in ("SCHEMA", "SECTION_EMPTY", "SOURCE_ID_INVALID") for i in issues)
+
+
+def has_fact_errors(issues) -> bool:
+    return any(i["severity"] == "error" and i["code"] in ("NUMBER_NOT_IN_SOURCE", "MISSING_AS_NORMAL")
+               for i in issues)
 
 
 def repairable(issues) -> list:

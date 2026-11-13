@@ -7,7 +7,7 @@ from .facts import find_missing_items, measurement_table
 from .llm_client import CallBudget, ModelCallError, now_iso
 from .parsing import ParseError, parse_json_object, unwrap_record
 from .prompts import case_block, generate_user, repair_user
-from .validate import (RECORD_FIELDS, audit_record, has_hard_errors, issue_score,
+from .validate import (RECORD_FIELDS, audit_record, has_hard_errors, has_fact_errors, issue_score,
                        normalize_record, repairable)
 
 # 各模式开关：用于基线与改进版、以及消融实验的同条件对比
@@ -110,6 +110,9 @@ class Pipeline:
         if has_hard_errors(best_issues):
             detail = "；".join(i["detail"] for i in best_issues if i["severity"] == "error")[:300]
             return _failed(case_id, "OUTPUT_SCHEMA_ERROR", detail)
+        if f["repair"] and has_fact_errors(best_issues):
+            detail = "；".join(i["detail"] for i in best_issues if i["severity"] == "error")[:300]
+            return _failed(case_id, "OUTPUT_FACT_ERROR", detail)
         medical_record = {k: best_record[k] for k in RECORD_FIELDS}
         return {"case_id": case_id, "status": "success", "medical_record": medical_record, "error": None}
 

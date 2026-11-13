@@ -9,6 +9,9 @@ sys.path.insert(0, str(ROOT))
 
 from src.facts import find_measurements, find_missing_items  # noqa: E402
 from src.parsing import ParseError, parse_json_object  # noqa: E402
+from src import config  # noqa: E402
+from src.pipeline import Pipeline  # noqa: E402
+from src.prompts import PromptSet  # noqa: E402
 from src.validate import audit_record, normalize_record  # noqa: E402
 
 CASE = json.loads((ROOT / "data" / "practice_cases.json").read_text(encoding="utf-8"))[0]  # DEMO001
@@ -46,6 +49,11 @@ class RuleTests(unittest.TestCase):
         rec["case_features"] = rec["case_features"].replace("2 周", "3 周")
         self.assertIn("TIME_NOT_IN_SOURCE", codes(rec))
 
+    def test_same_number_does_not_validate_different_time_unit(self):
+        rec = good_record()
+        rec["case_features"] = rec["case_features"].replace("2 周", "2 年")
+        self.assertIn("TIME_NOT_IN_SOURCE", codes(rec))
+
     def test_plan_written_as_done(self):
         rec = good_record()
         rec["plan"] = "已予补液治疗。" + rec["plan"]
@@ -55,6 +63,26 @@ class RuleTests(unittest.TestCase):
         rec = good_record()
         rec["plan"] = "院外已予口服药物，效果不详；" + rec["plan"]
         self.assertNotIn("PLAN_AS_DONE", codes(rec))
+
+    def test_prior_context_does_not_mask_new_treatment(self):
+        rec = good_record()
+        rec["plan"] = "回顾院外病史，入院后已给予输血。" + rec["plan"]
+        self.assertIn("PLAN_AS_DONE", codes(rec))
+
+    def test_unresolved_unsupported_value_fails_after_repair(self):
+        rec = good_record()
+        rec["case_features"] += "血红蛋白 999 g/L。"
+
+        class Client:
+            def chat(self, messages, purpose, budget, call_log):
+                budget.consume()
+                call_log.append({"purpose": purpose})
+                return "{}" if purpose == "extract" else json.dumps(rec, ensure_ascii=False)
+
+        result, log = Pipeline(Client(), PromptSet(config.PROMPT_DIR)).process(CASE)
+        self.assertEqual(log["repair_rounds"], 1)
+        self.assertEqual(result["error"]["code"], "OUTPUT_FACT_ERROR")
+        self.assertIsNone(result["medical_record"])
 
     def test_overconfident_diagnosis(self):
         rec = good_record()
@@ -85,6 +113,16 @@ class RuleTests(unittest.TestCase):
         self.assertTrue(all(set(e["source_ids"]) <= {"S01", "S02", "S03", "S04"} for e in fixed["evidence"]))
         self.assertTrue(fixes)
         self.assertNotIn("SOURCE_ID_INVALID", codes(fixed))
+
+    def test_normalize_keeps_existing_inference_when_truncating(self):
+        rec = good_record()
+        inference = rec["evidence"].pop()
+        rec["evidence"].extend({"statement": f"观察{i}", "source_ids": ["S03"], "kind": "fact"}
+                               for i in range(4))
+        rec["evidence"].append(inference)
+        fixed, _ = normalize_record(rec, CASE)
+        self.assertEqual(len(fixed["evidence"]), 5)
+        self.assertEqual(fixed["evidence"][-1], inference)
 
     def test_measurements_and_missing(self):
         vals = {(n, u) for n, u, _ in find_measurements("血压 156/92 mmHg，白细胞 13.6×10^9/L")}

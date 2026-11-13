@@ -3,6 +3,7 @@
 用法：python main.py（无参数）。读取同目录 .env 与 input.json，写出 output.json 与 run_log.json。
 退出码：0 全部处理完成（允许单条失败）；1 任务级运行错误；2 配置缺失或输入不符合协议。
 """
+import hashlib
 import logging
 import sys
 import traceback
@@ -23,8 +24,10 @@ def main() -> int:
     run_log = new_run_log(config.PIPELINE_MODE)
     exit_code = 1
     try:
+        config.RUN_LOG_FILE.unlink(missing_ok=True)
         model_name, endpoint = load_model_config(config.ENV_FILE)
         run_log.update(model_name=model_name, endpoint=endpoint)
+        input_hash = hashlib.sha256(config.INPUT_FILE.read_bytes()).hexdigest() if config.INPUT_FILE.is_file() else None
         cases = load_input(config.INPUT_FILE)
         prompts = PromptSet(config.PROMPT_DIR)
         run_log["prompt_version"] = {"version": prompts.version, "files": prompts.hashes}
@@ -37,6 +40,8 @@ def main() -> int:
         for lg in case_logs:
             log.info("%s -> %s（调用 %d 次，%.1fs）", lg["case_id"], lg["status"], lg["model_calls"], lg["duration_s"])
         write_json_atomic(config.OUTPUT_FILE, results)
+        run_log["input_sha256"] = input_hash
+        run_log["output_sha256"] = hashlib.sha256(config.OUTPUT_FILE.read_bytes()).hexdigest()
         run_log["cases"] = case_logs
         run_log["summary"] = summarize(results, case_logs)
         exit_code = 0
@@ -54,8 +59,9 @@ def main() -> int:
         run_log["exit_code"] = exit_code
         try:
             write_json_atomic(config.RUN_LOG_FILE, run_log)
-        except Exception as exc:  # 日志写失败不覆盖原退出码
+        except Exception as exc:
             log.error("run_log.json 写入失败：%s", exc)
+            exit_code = 1
     return exit_code
 
 

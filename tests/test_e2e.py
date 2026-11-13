@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from tools import mock_server  # noqa: E402
 from tools.check_output import check  # noqa: E402
 from src.validate import audit_record  # noqa: E402
+from src.llm_client import CallBudget, LLMClient, ModelCallError  # noqa: E402
 
 CASES = json.loads((ROOT / "data" / "practice_cases.json").read_text(encoding="utf-8"))
 
@@ -53,6 +55,8 @@ class E2E(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertTrue(all(r["status"] == "success" for r in out))
         self.assertEqual(log["summary"]["total_cases"], len(CASES))
+        self.assertEqual(len(log["input_sha256"]), 64)
+        self.assertEqual(len(log["output_sha256"]), 64)
         self.assertNotIn("Authorization", json.dumps(log))
 
     def test_faulty_model_is_repaired(self):
@@ -101,6 +105,23 @@ class E2E(unittest.TestCase):
         self.assertEqual(out[0]["status"], "failed")
         self.assertEqual(out[0]["error"]["code"], "MODEL_UNAVAILABLE")
         self.assertGreaterEqual(log["summary"]["failed_model_calls"], 1)
+
+    def test_truncated_response_keeps_usage_and_does_not_retry(self):
+        from io import BytesIO
+
+        class Reply(BytesIO):
+            status = 200
+
+        raw = b'{"choices":[{"finish_reason":"length","message":{"content":""}}],"usage":{"completion_tokens":3000}}'
+        client = LLMClient("mock", self.endpoint, {"max_tokens": 3000}, 1, 2, 0)
+        logs = []
+        with patch.object(client._opener, "open", return_value=Reply(raw)) as opener:
+            with self.assertRaises(ModelCallError) as caught:
+                client.chat([], "generate", CallBudget(6), logs)
+        self.assertEqual(caught.exception.code, "MODEL_OUTPUT_TRUNCATED")
+        self.assertEqual(opener.call_count, 1)
+        self.assertEqual(logs[0]["finish_reason"], "length")
+        self.assertEqual(logs[0]["usage"]["completion_tokens"], 3000)
 
 
 if __name__ == "__main__":

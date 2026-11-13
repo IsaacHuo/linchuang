@@ -111,13 +111,13 @@ def build_description():
         ".env 仅含 MODEL_NAME 与 ENDPOINT，不硬编码模型；不发送 Authorization 头，不读取系统代理。",
         "output.json 先写临时文件再整体替换；输入为空写 []；退出码 0/1/2 严格按技术规范。",
         "单例失败（资料无效、超时、无法解析）记 failed 并继续，不影响其他病例。",
-        "固定 temperature=0、top_p=1、seed=42；run_log.json 记录源码指纹、提示词哈希、每次调用的时间戳、耗时、请求/响应哈希与 token 用量，可与提交结果逐例核对。",
-        "22 项自动测试覆盖校验规则、空输入、配置缺失、重复 case_id、单例无效、模型不可达、错误输出修复等情形。",
+        "固定 temperature=0、top_p=1、seed=42；开发试跑关闭推理。日志记录源码与提示词指纹、输入输出 SHA-256、调用时间戳、结束原因和 token 用量，打包前逐例核对。",
+        "自动测试覆盖内容校验、修复后仍有明确事实错误、空输入、配置缺失、重复 case_id、单例无效、模型不可达和响应截断等情形。",
     ])
 
     doc.add_heading("六、改进验证", level=1)
-    doc.add_paragraph("在同一批练习病例、同一模型和参数下运行三个版本（tools/run_experiment.py），用同一套规则统计自动指标，"
-                      "并由两名队员按评分标准五个临床维度对隐藏版本标签的结果独立打分。")
+    doc.add_paragraph("在同一批自编教学病例、同一模型和参数下对比基线与改进版，并用同一套规则统计自动指标。"
+                      "临床五维评分待医学人员独立评阅。")
     table(doc, ["版本", "内容"], [
         ["baseline", "单次调用，系统提示取自赛题技术规范示例"],
         ["extract", "+ 事实抽取 + 数值/缺失项规则提示 + 确定性修正"],
@@ -127,7 +127,8 @@ def build_description():
     if m:
         mm = m["metrics"]
         modes = list(mm)
-        doc.add_paragraph(f"实验条件：模型 {m['meta']['model']}，病例 {m['meta']['cases']} 例，代码指纹 {m['meta']['fingerprint'][:16]}。")
+        doc.add_paragraph(f"开发验证通过 OpenRouter 调用 {m['meta']['model']}，处理 {m['meta']['cases']} 例，"
+                          f"实验快照指纹 {m['meta']['fingerprint'][:16]}。正式评测在赛方环境单独复现。")
         rows = [["成功例数"] + [f"{mm[x]['success']}/{mm[x]['cases']}" for x in modes],
                 ["无规则错误例数"] + [mm[x]["success_without_rule_errors"] for x in modes]]
         for k in mm[modes[0]]["issue_counts"]:
@@ -139,15 +140,15 @@ def build_description():
     else:
         p = doc.add_paragraph("【待填写】接入 Qwen 模型后运行 python tools/run_experiment.py，再重新执行 build_docs.py，结果表会自动填入此处。")
         p.runs[0].bold = True
-    doc.add_paragraph("人工评分结果（五维度均分，两名评分人）：【待填写】")
+    doc.add_paragraph("自动指标反映生成成功率和可由规则识别的错误。五维临床评分尚未完成。")
 
     doc.add_heading("七、局限与后续", level=1)
     bullets(doc, [
         "规则校验只能拦截可模式化的错误，鉴别诊断是否合理仍依赖提示词与人工评审。",
         "数值回溯按“数值存在于资料中”判断，同一数值被挂到错误的检查项上时无法识别。",
-        "改进版每例 2—3 次调用，耗时约为基线 2—3 倍；调用预算收紧时可关闭修复或改用 extract 版本。",
+        "改进版通常每例调用 2 次，规则发现错误时可追加 1 次修复，传输重试另计且受病例调用上限约束。",
         "未使用检索增强：赛题要求检索资料须由赛方提供或登记，后续获得许可资料后可加入鉴别诊断检索。",
-        "练习病例除 DEMO001 外为团队自编，医学要点需指导教师审定；官方练习病例发布后将替换并重做对比。",
+        "本轮使用团队自编教学病例，医学要点需指导教师审定。官方练习病例发布后将在允许的环境重做对比。",
     ])
 
     doc.add_heading("八、团队分工", level=1)
@@ -165,11 +166,11 @@ def build_declarations():
 
     doc.add_heading("一、所用模型及版本声明", level=1)
     table(doc, ["项目", "内容"], [
-        ["正式评测模型", "主办方指定的 Qwen 模型（MODEL_NAME 由主办方 .env 提供，源码未硬编码）"],
-        ["开发调试模型", "________（如 qwen-plus / qwen2.5:7b，注明来源与版本）"],
-        ["生成参数", "temperature=0，top_p=1，seed=42，max_tokens=3000"],
-        ["调用方式", "Chat Completions 兼容接口，无密钥，每例最多 3 次有效调用"],
-        ["提示词版本", "v2.0（prompts/manifest.json）"],
+        ["正式评测模型", "Qwen3.8 27B，赛方 MODEL_NAME 与完整地址由赛方 .env 提供"],
+        ["开发调试模型", "OpenRouter qwen/qwen3.8-27b，仅使用团队自编病例"],
+        ["开发验证参数", "temperature=0，top_p=1，seed=42，max_tokens=3000，关闭推理"],
+        ["调用方式", "正式评测使用赛方无密钥 Chat Completions 接口；开发验证经本机代理鉴权"],
+        ["提示词版本", "v2.2（prompts/manifest.json）"],
     ])
     doc.add_heading("二、检索资料来源与版本声明", level=1)
     doc.add_paragraph("本作品未使用检索增强（RAG），未接入任何外部知识库或检索服务。")
@@ -177,8 +178,8 @@ def build_declarations():
     bullets(doc, [
         "算法运行阶段仅调用赛方公布的指定模型，不调用其他模型或外部服务。",
         "output.json / results.json 均由程序自动生成，未人工修改正文；run_log.json 为程序运行时自动记录，未作任何改动。",
-        "开发过程中使用了 AI 编程助手辅助编写代码与文档，所有代码均经团队审阅与测试。",
-        "练习病例除赛题附件示例外均为团队人工编写的教学病例，不来自真实患者。",
+        "开发过程中使用 AI 编程助手辅助编写代码、文档和部分合成教学病例，提交版本由团队确认。",
+        "模型对照实验使用团队自编教学病例，赛题附件示例仅用于本机模拟验证。",
     ])
     doc.add_heading("四、数据使用承诺书", level=1)
     doc.add_paragraph("本队全体成员承诺：比赛病例资料仅在参赛期间用于本赛题，不对外传播，不用于其他用途；"

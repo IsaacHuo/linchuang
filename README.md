@@ -20,7 +20,9 @@ python main.py                          # 无参数；读取 .env 与 input.json
 | INVALID_CASE | record_cutoff 或 sources 无效 |
 | MODEL_TIMEOUT / MODEL_UNAVAILABLE / MODEL_HTTP_ERROR / MODEL_BAD_RESPONSE | 模型请求失败，已达到重试上限 |
 | CALL_BUDGET_EXCEEDED | 超出每例调用上限 |
+| MODEL_OUTPUT_TRUNCATED | 模型达到生成长度上限，本次正文不完整 |
 | OUTPUT_PARSE_ERROR / OUTPUT_SCHEMA_ERROR | 模型输出无法解析，或修复后仍缺正文/结构不合规 |
+| OUTPUT_FACT_ERROR | 改进版修复后仍有数值来源错误或把缺失写成正常 |
 | INTERNAL_ERROR | 其他单例异常 |
 
 ## 方法：提取 → 生成 → 校验 → 修复
@@ -36,9 +38,10 @@ python main.py                          # 无参数；读取 .env 与 input.json
 
 ## 可复现性
 
-- 固定生成参数 temperature=0、top_p=1、seed=42（src/config.py）。若服务拒绝这些参数，程序会自动去掉后重试，并在 run_log 中标注 gen_params_sent=false。
+- 固定生成参数 temperature=0、top_p=1、seed=42、max_tokens=3000，开发验证时关闭 Qwen 推理以给 JSON 留足生成预算（src/config.py）。正式运行按赛方接口确认参数。若接口拒绝参数，记录失败并保留配置以便复核。
 - run_log.json 记录：run_id、起止时间、退出码、模型与地址、生成参数与限制、提示词版本及各文件哈希、源码指纹（main.py + src + prompts 的 SHA-256）；每例的调用序号、用途、尝试次数、时间戳、耗时、HTTP 状态、请求/响应 SHA-256、token 用量、各步校验问题与修正。日志不含任何密钥。
 - 核对方式：重跑后比较 code_fingerprint 与每例 response_sha256；温度为 0 时差异主要来自服务端随机性或版本变化。
+- 日志记录结束原因和输入输出 SHA-256。打包工具核对当前输入、输出、源码及逐例日志，旧版本日志需要随当前源码重新运行生成。
 
 ## 改进验证
 

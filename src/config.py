@@ -17,7 +17,14 @@ PROMPT_DIR = BASE_DIR / "prompts"
 PIPELINE_MODE = "improved"
 
 # 固定生成参数（temperature=0 + 固定 seed 以确保可复现）
-GEN_PARAMS = {"temperature": 0, "top_p": 1, "seed": 42, "max_tokens": 3000}
+GEN_PARAMS = {
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 42,
+    "max_tokens": 3000,
+    # OpenRouter Qwen 开发验证使用此设置。正式接口以赛方参数为准。
+    "reasoning": {"enabled": False},
+}
 
 REQUEST_TIMEOUT_S = 120     # 单次请求超时
 MAX_RETRIES = 2             # 单次调用失败后的最大重试次数（不含首次）

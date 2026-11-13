@@ -2,7 +2,6 @@
 import hashlib
 import json
 import socket
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -53,14 +52,10 @@ class LLMClient:
         self.backoff_s = backoff_s
         # 等价于 requests 的 trust_env=False：不读取系统代理配置
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        self._lock = threading.Lock()
-        self.send_gen_params = True
 
     def _build_body(self, messages):
         body = {"model": self.model_name, "messages": messages, "stream": False}
-        with self._lock:
-            if self.send_gen_params:
-                body.update(self.gen_params)
+        body.update(self.gen_params)
         return body
 
     def chat(self, messages, purpose: str, budget: CallBudget, call_log: list) -> str:
@@ -77,7 +72,7 @@ class LLMClient:
                 "attempt": attempt + 1,
                 "started_at": now_iso(),
                 "request_sha256": sha256_text(payload),
-                "gen_params_sent": "temperature" in body,
+                "gen_params_sent": bool(self.gen_params),
             }
             t0 = time.monotonic()
             retryable = False
@@ -93,11 +88,17 @@ class LLMClient:
                     raw = resp.read().decode("utf-8")
                 rec["http_status"] = status
                 obj = json.loads(raw)
-                content = obj["choices"][0]["message"]["content"]
+                rec["usage"] = obj.get("usage")
+                choice = obj["choices"][0]
+                rec["finish_reason"] = choice.get("finish_reason")
+                content = choice["message"].get("content")
+                if isinstance(content, str):
+                    rec["response_sha256"] = sha256_text(content)
+                if rec["finish_reason"] == "length":
+                    raise ModelCallError("MODEL_OUTPUT_TRUNCATED", "模型达到生成长度上限，正文可能不完整")
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("模型返回内容为空")
-                rec.update(ok=True, response_sha256=sha256_text(content),
-                           usage=obj.get("usage"), finished_at=now_iso(),
+                rec.update(ok=True, finished_at=now_iso(),
                            duration_s=round(time.monotonic() - t0, 3))
                 call_log.append(rec)
                 return content
@@ -109,14 +110,9 @@ class LLMClient:
                     pass
                 rec["http_status"] = exc.code
                 last = ModelCallError("MODEL_HTTP_ERROR", f"HTTP {exc.code}: {detail}")
-                if exc.code in (400, 422) and body.get("temperature") is not None:
-                    # 部分服务不接受额外生成参数：关闭后重试一次，并在日志中记录
-                    with self._lock:
-                        self.send_gen_params = False
-                    rec["note"] = "服务拒绝生成参数，后续请求不再附带"
-                    retryable = True
-                else:
-                    retryable = exc.code in RETRYABLE_HTTP
+                retryable = exc.code in RETRYABLE_HTTP
+            except ModelCallError as exc:
+                last = exc
             except (socket.timeout, TimeoutError):
                 last = ModelCallError("MODEL_TIMEOUT", "模型请求超时")
                 retryable = True
@@ -126,7 +122,7 @@ class LLMClient:
                 else:
                     last = ModelCallError("MODEL_UNAVAILABLE", f"无法连接模型服务：{exc.reason}")
                 retryable = True
-            except (ValueError, KeyError, IndexError, TypeError) as exc:
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
                 last = ModelCallError("MODEL_BAD_RESPONSE", f"模型响应结构异常：{exc}")
                 retryable = True
             rec.update(ok=False, error_code=last.code, error=last.message[:300],
