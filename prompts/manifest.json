@@ -1,0 +1,10 @@
+{
+  "prompt_version": "v2.0",
+  "files": {
+    "common_rules.txt": "共享书写规则，注入生成与修复阶段",
+    "system_baseline.txt": "基线：赛题技术规范中的示例系统提示 + JSON 结构说明，单次调用",
+    "system_extract.txt": "改进版第 1 步：结构化事实抽取",
+    "system_generate.txt": "改进版第 2 步：基于原文 + 抽取结果 + 规则提示生成首程",
+    "system_repair.txt": "改进版第 3 步：针对自动校验问题的定向修复"
+  }
+}

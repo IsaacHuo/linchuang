@@ -1,0 +1,4 @@
+【阶段：校验修复】
+{COMMON_RULES}
+下面给出病例资料、上一版首次病程记录 JSON，以及程序自动校验发现的问题。请逐条修正这些问题，未涉及的内容尽量保持不变；数值有误时以资料原文为准，无法在资料中找到依据的内容直接删除。
+只返回修正后的完整 JSON 对象（字段结构与上一版相同：case_features、diagnostic_discussion、plan、evidence、review_items），不要代码围栏或解释文字。
