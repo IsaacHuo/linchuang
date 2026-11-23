@@ -1,4 +1,4 @@
-"""Chat Completions 兼容接口调用（无密钥、不走系统代理）。"""
+"""Chat Completions 兼容接口调用（默认无密钥、不走系统代理）。"""
 import hashlib
 import json
 import socket
@@ -42,8 +42,28 @@ class CallBudget:
         self.used += 1
 
 
+class SubBudget:
+    """从父预算中划出的子额度：用于给某一步设上限，保证后续步骤仍有调用次数。"""
+
+    def __init__(self, parent: CallBudget, limit: int):
+        self.parent = parent
+        self.limit = limit
+        self.used = 0
+
+    @property
+    def remaining(self) -> int:
+        return min(self.limit - self.used, self.parent.remaining)
+
+    def consume(self) -> None:
+        if self.used >= self.limit:
+            raise ModelCallError("CALL_BUDGET_EXCEEDED", f"该步骤已达到调用上限 {self.limit} 次")
+        self.parent.consume()
+        self.used += 1
+
+
 class LLMClient:
-    def __init__(self, model_name, endpoint, gen_params, timeout_s, max_retries, backoff_s):
+    def __init__(self, model_name, endpoint, gen_params, timeout_s, max_retries, backoff_s, api_key=""):
+        self.api_key = api_key or ""
         self.model_name = model_name
         self.endpoint = endpoint
         self.gen_params = dict(gen_params)
@@ -53,18 +73,26 @@ class LLMClient:
         # 等价于 requests 的 trust_env=False：不读取系统代理配置
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def _build_body(self, messages):
+    def _headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:  # 仅在配置了密钥时发送；密钥不写入任何日志
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _build_body(self, messages, params=None):
         body = {"model": self.model_name, "messages": messages, "stream": False}
         body.update(self.gen_params)
+        if params:
+            body.update(params)
         return body
 
-    def chat(self, messages, purpose: str, budget: CallBudget, call_log: list) -> str:
+    def chat(self, messages, purpose: str, budget: CallBudget, call_log: list, params=None) -> str:
         """返回模型回复文本。每次 HTTP 尝试都写入 call_log（供 run_log 核查）。"""
         last = ModelCallError("MODEL_UNAVAILABLE", "未发起调用")
         attempt = 0
         while attempt <= self.max_retries:
             budget.consume()
-            body = self._build_body(messages)
+            body = self._build_body(messages, params)
             payload = json.dumps(body, ensure_ascii=False)
             rec = {
                 "call_no": len(call_log) + 1,
@@ -72,7 +100,7 @@ class LLMClient:
                 "attempt": attempt + 1,
                 "started_at": now_iso(),
                 "request_sha256": sha256_text(payload),
-                "gen_params_sent": bool(self.gen_params),
+                "gen_params_sent": bool(self.gen_params or params),
             }
             t0 = time.monotonic()
             retryable = False
@@ -80,7 +108,7 @@ class LLMClient:
                 req = urllib.request.Request(
                     self.endpoint,
                     data=payload.encode("utf-8"),
-                    headers={"Content-Type": "application/json"},  # 不发送 Authorization
+                    headers=self._headers(),
                     method="POST",
                 )
                 with self._opener.open(req, timeout=self.timeout_s) as resp:

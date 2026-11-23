@@ -9,6 +9,6 @@
   "missing": ["资料明确写未提供或不详、且对本例判断有意义的信息"],
   "conflicts": [{"text": "资料之间相互矛盾之处，没有则为空数组", "source_ids": ["S01", "S02"]}],
   "initial_impression": {"text": "资料中的入院初步判断原文，没有则为空字符串", "source_ids": []},
-  "problems": ["本例当前需要处理或明确的主要临床问题，2—4 个"]
+  "problem_list": [{"problem": "本例当前需要处理或明确的主要临床问题（2—4 个，按紧急程度排序）", "key_findings": ["支撑该问题的关键资料原文"], "source_ids": ["S01"], "must_not_miss": ["该问题下不可漏掉、需尽早排除的危重情况（资料不支持时也列出待排除项），没有则为空数组"]}]
 }
-source_ids 只能使用资料中出现的编号。
+source_ids 只能使用资料中出现的编号。problem_list 只列问题和资料依据，不下诊断结论。

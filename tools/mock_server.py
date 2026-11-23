@@ -45,8 +45,20 @@ def extract_reply(sources):
         "negatives": [], "timeline": [{"text": sources[0][1], "source_ids": [sources[0][0]]}],
         "missing": _missing(sources), "conflicts": [],
         "initial_impression": {"text": imp, "source_ids": [sid] if sid else []},
-        "problems": [imp or "病因待查"],
+        "problem_list": [{"problem": imp or "病因待查", "key_findings": [], "source_ids": [sid] if sid else [],
+                          "must_not_miss": ["中枢神经系统感染"] if "惊厥" in imp else []}],
     }
+
+
+def embed_vector(text, dim=64):
+    """确定性的字符二元组哈希向量：相同/相近文本余弦高，供测试检索与对齐逻辑。"""
+    import hashlib
+    vec = [0.0] * dim
+    t = re.sub(r"\s+", "", text)
+    for i in range(max(1, len(t) - 1)):
+        h = int(hashlib.md5(t[i:i + 2].encode("utf-8")).hexdigest(), 16)
+        vec[h % dim] += 1.0
+    return vec
 
 
 def generate_reply(sources, faulty=False):
@@ -78,6 +90,8 @@ def generate_reply(sources, faulty=False):
 
 class Handler(BaseHTTPRequestHandler):
     faulty = False
+    api_key = ""          # 非空时要求 Bearer 密钥一致；为空时拒绝任何 Authorization 头（旧协议）
+    embed_down = False    # 模拟向量服务不可用
 
     def log_message(self, *args):
         pass
@@ -91,9 +105,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
-        if self.headers.get("Authorization"):
+        auth = self.headers.get("Authorization")
+        if self.api_key:
+            if auth != f"Bearer {self.api_key}":
+                return self._send(401, {"error": "invalid api key"})
+        elif auth:
             return self._send(400, {"error": "Authorization header must not be sent"})
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8"))
+        if self.path.rstrip("/").endswith("/embeddings"):
+            if self.embed_down:
+                return self._send(503, {"error": "embedding service down"})
+            inp = body.get("input")
+            inp = [inp] if isinstance(inp, str) else list(inp or [])
+            return self._send(200, {"object": "list", "model": body.get("model"),
+                                    "data": [{"object": "embedding", "index": i, "embedding": embed_vector(t)}
+                                             for i, t in enumerate(inp)]})
         msgs = body.get("messages", [])
         system = next((m["content"] for m in msgs if m["role"] == "system"), "")
         user = next((m["content"] for m in msgs if m["role"] == "user"), "")
@@ -114,9 +140,9 @@ class Handler(BaseHTTPRequestHandler):
         })
 
 
-def start(port=0, faulty=False):
-    """后台线程启动，返回 (server, endpoint)。供测试使用。"""
-    handler = type("H", (Handler,), {"faulty": faulty})
+def start(port=0, faulty=False, api_key="", embed_down=False):
+    """后台线程启动，返回 (server, endpoint)。供测试使用。向量接口为同主机 /v1/embeddings。"""
+    handler = type("H", (Handler,), {"faulty": faulty, "api_key": api_key, "embed_down": embed_down})
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"

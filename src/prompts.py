@@ -32,10 +32,30 @@ def _dump(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=1)
 
 
-def generate_user(case: dict, extraction=None, measurements=None, missing=None) -> str:
+def _problem_block(problems) -> str:
+    rows = []
+    for n, p in enumerate(problems, 1):
+        if not isinstance(p, dict) or not p.get("problem"):
+            continue
+        row = f"{n}. {p['problem']}"
+        if p.get("source_ids"):
+            row += f"（{'、'.join(map(str, p['source_ids']))}）"
+        if p.get("must_not_miss"):
+            row += "；不可漏诊/需排除：" + "、".join(map(str, p["must_not_miss"]))
+        rows.append(row)
+    return "\n".join(rows)
+
+
+def generate_user(case: dict, extraction=None, measurements=None, missing=None, knowledge=None) -> str:
     parts = [case_block(case)]
     if extraction:
-        parts.append("【结构化事实（上一步抽取，供组织内容参考；如与原文不一致，以原文为准）】\n" + _dump(extraction))
+        facts = {k: v for k, v in extraction.items() if k != "problem_list"}
+        parts.append("【结构化事实（上一步抽取，供组织内容参考；如与原文不一致，以原文为准）】\n" + _dump(facts))
+        block = _problem_block(extraction.get("problem_list") or [])
+        if block:
+            parts.append("【临床问题清单（拟诊讨论与诊疗计划按此逐一组织）】\n" + block)
+    if knowledge:
+        parts.append("【鉴别参考（通用医学知识，非本病例事实；不得把其中内容当作本例资料写入）】\n" + knowledge)
     if measurements:
         rows = [f"{r['source_id']}：" + "；".join(r["values"]) for r in measurements]
         parts.append("【资料中的数值原文（引用时必须与此完全一致，不得出现此外的检验或体征数值）】\n" + "\n".join(rows))

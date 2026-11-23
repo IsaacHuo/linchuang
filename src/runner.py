@@ -31,6 +31,7 @@ def code_fingerprint() -> dict:
     files = [config.BASE_DIR / "main.py"]
     files += sorted((config.BASE_DIR / "src").glob("*.py"))
     files += sorted(config.PROMPT_DIR.glob("*"))
+    files += sorted((config.BASE_DIR / "resources").rglob("*")) if (config.BASE_DIR / "resources").is_dir() else []
     total = hashlib.sha256()
     per_file = {}
     for p in files:
@@ -57,10 +58,12 @@ def new_run_log(mode: str) -> dict:
         "limits": {
             "request_timeout_s": config.REQUEST_TIMEOUT_S,
             "max_retries": config.MAX_RETRIES,
-            "max_calls_per_case": config.MAX_CALLS_PER_CASE,
+            "call_budget_per_case": config.CALL_BUDGET,
             "max_repair_rounds": config.MAX_REPAIR_ROUNDS,
+            "n_candidates": config.N_CANDIDATES,
             "concurrency": config.CONCURRENCY,
         },
+        "random_seed": config.RANDOM_SEED,
         "prompt_version": None,
         "code_fingerprint": code_fingerprint(),
         "summary": {},
@@ -75,6 +78,7 @@ def summarize(results, logs) -> dict:
         "total_cases": len(results),
         "success": sum(r["status"] == "success" for r in results),
         "failed": sum(r["status"] == "failed" for r in results),
+        "fallback": sum(bool(lg.get("fallback")) for lg in logs),
         "total_model_calls": len(calls),
         "failed_model_calls": sum(not c.get("ok") for c in calls),
         "case_ids": [r["case_id"] for r in results],

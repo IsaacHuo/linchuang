@@ -79,10 +79,15 @@ class RuleTests(unittest.TestCase):
                 call_log.append({"purpose": purpose})
                 return "{}" if purpose == "extract" else json.dumps(rec, ensure_ascii=False)
 
-        result, log = Pipeline(Client(), PromptSet(config.PROMPT_DIR)).process(CASE)
+        result, log = Pipeline(Client(), PromptSet(config.PROMPT_DIR), fallback=False).process(CASE)
         self.assertEqual(log["repair_rounds"], 1)
         self.assertEqual(result["error"]["code"], "OUTPUT_FACT_ERROR")
         self.assertIsNone(result["medical_record"])
+        # 开启保底时改为输出只摘录原文的保底草稿，并记录原因
+        result, log = Pipeline(Client(), PromptSet(config.PROMPT_DIR), fallback=True).process(CASE)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(log["fallback"])
+        self.assertEqual(log["fallback_reason"]["code"], "OUTPUT_FACT_ERROR")
 
     def test_overconfident_diagnosis(self):
         rec = good_record()

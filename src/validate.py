@@ -4,7 +4,7 @@
 """
 import re
 
-from .facts import all_numbers, find_measurements, find_missing_items, find_time_spans
+from .facts import all_numbers, find_measurements, find_missing_items, find_time_spans, norm_num
 
 TEXT_FIELDS = ("case_features", "diagnostic_discussion", "plan")
 RECORD_FIELDS = TEXT_FIELDS + ("evidence", "review_items")
@@ -126,6 +126,13 @@ _NEG_PREFIX = re.compile(r"(?:未|不|尚|待|需|以|能否|可否|无法|难�
 _NORMAL_WORDS = r"(?:正常|无异常|未见异常|阴性|无明显异常|无特殊)"
 
 
+_DOSE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mg/kg|μg/kg|ug/kg|ml/kg|mL/kg|U/kg|mg|μg|ug|mcg|g|ml|mL|IU|U|万U|单位)(?![A-Za-z/])")
+
+
+def _clauses(text: str):
+    return [c for c in re.split(r"[。；;\n]", text) if c.strip()]
+
+
 def content_issues(rec: dict, case: dict) -> list:
     """在 schema 通过（至少字段类型正确）的记录上做内容规则检查。"""
     issues = []
@@ -176,9 +183,17 @@ def content_issues(rec: dict, case: dict) -> list:
     if len(ev) > 5:
         issues.append(issue("EVIDENCE_COUNT", "error", "evidence", f"evidence {len(ev)} 条，超过 5 条"))
     elif len(ev) < min(3, len(case["sources"])):
-        issues.append(issue("EVIDENCE_COUNT", "warn", "evidence", f"evidence 仅 {len(ev)} 条"))
+        issues.append(issue("EVIDENCE_COUNT", "error", "evidence", f"evidence 仅 {len(ev)} 条，应为 3—5 条"))
     if ev and not any(isinstance(e, dict) and e.get("kind") == "inference" for e in ev):
-        issues.append(issue("NO_INFERENCE", "warn", "evidence", "evidence 未区分推断（无 inference 条目）"))
+        issues.append(issue("NO_INFERENCE", "error", "evidence", "evidence 未区分推断（至少需要 1 条 inference）"))
+    # 7) 计划中不得出现资料外的具体药物剂量（未明确诊断前只写处理原则）
+    flagged = {n for n, _, _ in find_measurements(texts["plan"]) if n not in src_nums}
+    for m in _DOSE.finditer(texts["plan"]):
+        num = norm_num(m.group(1))
+        if num in src_nums or num in flagged:
+            continue
+        flagged.add(num)
+        issues.append(issue("PLAN_DOSE_NOT_IN_SOURCE", "error", "plan", f"计划中出现资料外的具体剂量\u201c{m.group(0).strip()}\u201d"))
     total = sum(len(texts[f]) for f in TEXT_FIELDS)
     if total < 300:
         issues.append(issue("LENGTH", "warn", "medical_record", f"三段正文合计 {total} 字，偏短"))

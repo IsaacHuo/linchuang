@@ -4,20 +4,37 @@ import os
 import tempfile
 from pathlib import Path
 
+from .adapter import AdapterError, lenient_loads, to_canonical
+
 
 class InputError(Exception):
     """输入不符合基本协议，对应退出码 2。"""
 
 
 def load_input(path: Path) -> list:
+    return read_cases(path)[0]
+
+
+def read_cases(path: Path):
+    """读取并统一为标准病例数组，返回 (cases, notes)。整体无法识别时抛 InputError（退出码 2）。"""
     if not path.is_file():
-        raise InputError(f"未找到输入文件 {path.name}")
+        raise InputError(f"未找到输入文件 {path}")
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        text = path.read_text(encoding="utf-8-sig")
+        raw, fix = lenient_loads(text)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise InputError(f"input.json 无法解析：{exc}") from exc
-    if not isinstance(data, list):
-        raise InputError("input.json 顶层必须是 JSON 数组")
+        raise InputError(f"{path.name} 无法解析：{exc}") from exc
+    try:
+        data, notes = to_canonical(raw)
+    except AdapterError as exc:
+        raise InputError(str(exc)) from exc
+    if fix:
+        notes.insert(0, f"输入 JSON 存在格式问题，已自动{fix}")
+    _check_ids(data)
+    return data, notes
+
+
+def _check_ids(data: list) -> None:
     seen = set()
     for idx, case in enumerate(data):
         if not isinstance(case, dict):
@@ -28,7 +45,6 @@ def load_input(path: Path) -> list:
         if case_id in seen:
             raise InputError(f"case_id 重复：{case_id}")
         seen.add(case_id)
-    return data
 
 
 def check_case(case: dict):
