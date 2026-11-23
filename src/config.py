@@ -40,7 +40,7 @@ MAX_REVIEW_ITEMS = 10       # 待核事项上限，避免规则补充后过长
 
 # 检索增强（团队自编鉴别卡片）。embedding 服务未配置或不可用时自动退回本地 BM25。
 # 默认关闭：卡片需医学队员按 resources/kb/REVIEW.md 审核签字后再改为 True（或运行时加 --rag）
-USE_RAG = False
+USE_RAG = True
 RAG_TOP_K = 3
 EMBED_TIMEOUT_S = 60
 EVIDENCE_ALIGN_THRESHOLD = 0.45  # evidence 与所引资料的向量相似度低于此值记 warn（不触发修复）

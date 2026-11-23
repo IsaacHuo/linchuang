@@ -61,7 +61,7 @@ python main.py --input input.json --output output.json
 
 - resources/kb/cards.jsonl：团队自编鉴别诊断卡片，每行一张（id、topic、triggers、differentials[{name, support, against, must_check}]、red_flags、plan_hints、reference），依据规划教材与公开指南要点整理，不含真实患者信息、具体数值与药物剂量。
 - 卡片只作为"鉴别参考"进入提示，不作为本病例事实；输出中的数值、时间仍必须回溯到本病例资料。
-- 默认关闭（config.USE_RAG=False），医学队员按 resources/kb/REVIEW.md 审核后再开启，或运行时加 --rag。
+- 默认开启（config.USE_RAG=True）。39 张卡片已于 2026-11-23 经团队审核确认，记录见 resources/kb/REVIEW.md；运行时加 --no-rag 可关闭，用于消融对比。
 
 ## 5. 随机种子与可复现性
 
