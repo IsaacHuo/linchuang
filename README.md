@@ -24,7 +24,7 @@ python main.py --input input.json --output output.json
 ```
 
 - 路径均为命令行参数或相对程序目录，无硬编码；全程无人工交互。也兼容旧入口 `python main.py`（读写程序目录下 input.json / output.json）。
-- 模型配置：环境变量优先，其次程序目录下 .env（模板见 .env.example）：
+- 模型配置：读取 main.py 所在目录的 .env（官方只下发 MODEL_NAME、ENDPOINT 两项，见 .env.example），同名的环境变量优先。可选扩展项如下，缺省不影响运行、也不需要任何密钥：
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
@@ -52,7 +52,7 @@ python main.py --input input.json --output output.json
 
 ## 3. 依赖环境
 
-- Python 3（开发与测试环境 3.13），仅用标准库（urllib、json、re、argparse、concurrent.futures），无第三方包。
+- Python 3.11（官方统一运行环境，已在 3.11.16 上实测），仅用标准库（urllib、json、re、argparse、concurrent.futures），无第三方包，pip install -r requires.txt 无需联网安装任何东西。
 - 网络：只访问赛事内网 Qwen 与 BGE-M3 接口，不读取系统代理，不访问公网。
 - 主要参数（src/config.py）：每例调用预算 6、修复 ≤1 轮、候选数 1、并发 1、请求超时 60 s、重试 1 次（另有全局总时限 TOTAL_BUDGET_S=900 s，到点未完成的病例直接走保底）。赛方公布限额后按需调整。
 
