@@ -34,8 +34,9 @@ python main.py --input input.json --output output.json
 | EMBED_ENDPOINT / EMBED_MODEL / EMBED_API_KEY | 否 | BGE-M3 embeddings 地址、模型名（默认 bge-m3）、密钥 |
 
 - 可选参数：`--mode baseline|extract|improved|improved+rag`（默认 improved）、`--rag / --no-rag`、`--candidates N`、`--no-fallback`。
-- 输出：output.json（先写临时文件再整体替换；空输入写 []）；run_log.json 写在 output 同目录。
-- 退出码：0 全部处理完成（允许单条 failed）；1 任务级运行错误；2 配置缺失或输入不符合协议（无法解析、case_id 缺失或重复）。
+- 输出：output.json（先写临时文件再整体替换；空输入写 []）；run_log.json 写在 output 同目录；同目录再写一份内容相同的 results.json（赛事预检两种命名都认，可用 config.WRITE_RESULTS_ALIAS=False 关闭）。
+- 增量落盘：每处理完一例就原子重写一次 output.json（未完成的病例以 status=failed / error.code=NOT_PROCESSED 占位），进程被外部时限中断时仍留有可用结果，不会整份为零；可用 config.INCREMENTAL_WRITE=False 关闭。
+- 退出码：0 全部处理完成（允许单条 failed）；1 任务级运行错误；2 配置缺失或输入不符合协议（无法解析、case_id 缺失或重复）。配置缺失时仍按保底草稿写出结果（run_log 标注 fallback 与 ConfigError），退出码保持 2。
 
 | error.code | 含义 |
 |---|---|
@@ -53,7 +54,7 @@ python main.py --input input.json --output output.json
 
 - Python 3（开发与测试环境 3.13），仅用标准库（urllib、json、re、argparse、concurrent.futures），无第三方包。
 - 网络：只访问赛事内网 Qwen 与 BGE-M3 接口，不读取系统代理，不访问公网。
-- 主要参数（src/config.py）：每例调用预算 6、修复 ≤1 轮、候选数 1、并发 1、请求超时 120 s、重试 2 次。赛方公布限额后按需调整。
+- 主要参数（src/config.py）：每例调用预算 6、修复 ≤1 轮、候选数 1、并发 1、请求超时 60 s、重试 1 次（另有全局总时限 TOTAL_BUDGET_S=900 s，到点未完成的病例直接走保底）。赛方公布限额后按需调整。
 
 ## 4. 知识资源
 
@@ -65,7 +66,10 @@ python main.py --input input.json --output output.json
 
 ## 5. 随机种子与可复现性
 
-- 固定 random_seed=42；生成参数 temperature=0、top_p=1、seed=42、max_tokens=3000，开发验证时关闭 Qwen 推理以给 JSON 留足生成预算（src/config.py）。多候选时第 n 个候选用 temperature=0.7、seed=42+n。正式运行按赛方接口确认参数；接口拒绝参数时记录失败并保留配置以便复核。
+- 固定 random_seed=42；生成参数 temperature=0、top_p=1、seed=42、max_tokens=4000（留足思考 token 后仍有正文预算），并默认关闭 Qwen 思考：官方 vLLM 用 `chat_template_kwargs: {"enable_thinking": false}`（src/config.py）。
+- 思考开关的发送形式可用环境变量 THINKING_OFF_STYLE 切换：chat_template（默认，官方内网）/ reasoning（部分第三方网关）/ none（不发任何字段）。
+- 接口兼容兜底：若接口以 400 拒绝未知字段（vLLM 的 extra="forbid"），程序自动摘掉被点名的可选参数（chat_template_kwargs、reasoning、top_p、seed、response_format）并立即重试一次，实际摘掉的字段写入 run_log.stripped_params 便于复核；model/messages/temperature/max_tokens 永不摘除。
+- 多候选时第 n 个候选用 temperature=0.7、seed=42+n。正式运行按赛方接口确认参数。
 - run_log.json 记录：run_id、起止时间、退出码、模型与地址、生成参数与限制、提示词版本及文件哈希、源码指纹（main.py + src + prompts + resources 的 SHA-256）、检索方式与命中卡片；每例的调用用途、尝试次数、耗时、HTTP 状态、请求/响应 SHA-256、token 用量、校验问题与修正、是否保底。日志不含密钥。
 - 日志记录每次调用的结束原因（finish_reason）和输入输出文件的 SHA-256。
 - 核对方式：重跑后比较 code_fingerprint 与每例 response_sha256。

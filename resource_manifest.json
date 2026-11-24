@@ -33,9 +33,9 @@
     "temperature": 0,
     "top_p": 1,
     "seed": 42,
-    "max_tokens": 3000,
-    "reasoning": {
-      "enabled": false
+    "max_tokens": 4000,
+    "chat_template_kwargs": {
+      "enable_thinking": false
     }
   }
 }

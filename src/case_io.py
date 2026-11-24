@@ -70,6 +70,18 @@ def check_case(case: dict):
     return None
 
 
+def write_results_alias(output_path: Path, results):
+    """同时写一份 results.json：技术规范叫 output.json、提交材料叫 results.json，两种都给。
+
+    已存在同名文件时直接覆盖；与主输出同一路径时跳过。返回实际写出的路径或 None。
+    """
+    alias = output_path.with_name("results.json")
+    if alias.resolve() == output_path.resolve():
+        return None
+    write_json_atomic(alias, results)
+    return alias
+
+
 def write_json_atomic(path: Path, data) -> None:
     """先写同目录临时文件，完成后整体替换，避免半成品被当作结果。"""
     fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))

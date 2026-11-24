@@ -3,13 +3,15 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.adapter import AdapterError, lenient_loads, record_to_sources, to_canonical  # noqa: E402
 from src.fallback import build_fallback  # noqa: E402
-from src.llm_client import CallBudget, ModelCallError, SubBudget  # noqa: E402
+from src import config  # noqa: E402
+from src.llm_client import CallBudget, LLMClient, ModelCallError, SubBudget  # noqa: E402
 from src.pipeline import MODES, must_not_miss_coverage, plan_steps  # noqa: E402
 from src.retrieval import BM25, Aligner, Retriever, format_cards, load_cards  # noqa: E402
 from src.validate import audit_record  # noqa: E402
@@ -179,6 +181,62 @@ class RetrievalTest(unittest.TestCase):
 
     def test_load_cards_missing(self):
         self.assertEqual(load_cards(ROOT / "no_such.jsonl"), [])
+
+
+class GenParamsTest(unittest.TestCase):
+    """参数兼容性：默认发官方 vLLM 认识的形式，接口不认时自动摘除重试。"""
+
+    def test_body_uses_chat_template_kwargs(self):
+        client = LLMClient("qwen3-8b", "http://x/v1/chat/completions", config.GEN_PARAMS, 60, 1, 0)
+        body = client._build_body([{"role": "user", "content": "hi"}], {"seed": 42})
+        self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertNotIn("reasoning", body)  # OpenRouter 私有字段不能出现
+        self.assertEqual(body["max_tokens"], config.GEN_PARAMS["max_tokens"])
+        self.assertEqual(body["seed"], 42)
+
+    def test_strip_unsupported_on_400_then_succeed(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        class Reply(BytesIO):
+            status = 200
+
+        sent = []
+
+        def fake_open(req, timeout=None):
+            sent.append(json.loads(req.data.decode("utf-8")))
+            if len(sent) == 1:
+                raise HTTPError(req.full_url, 400, "Bad Request", {},
+                                BytesIO(b'{"detail":"extra_forbidden: chat_template_kwargs"}'))
+            return Reply(b'{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}],"usage":{}}')
+
+        client = LLMClient("qwen3-8b", "http://x/v1/chat/completions",
+                           {"temperature": 0, "max_tokens": 4000,
+                            "chat_template_kwargs": {"enable_thinking": False}}, 60, 1, 0)
+        logs = []
+        with patch.object(client._opener, "open", side_effect=fake_open):
+            out = client.chat([], "generate", CallBudget(6), logs)
+        self.assertEqual(out, "ok")
+        self.assertEqual(client.stripped_params, ["chat_template_kwargs"])
+        self.assertIn("chat_template_kwargs", sent[0])
+        self.assertNotIn("chat_template_kwargs", sent[1])
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[0]["stripped_params"], ["chat_template_kwargs"])
+
+    def test_400_without_optional_keys_is_not_stripped(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        def fake_open(req, timeout=None):
+            raise HTTPError(req.full_url, 400, "Bad Request", {}, BytesIO(b'{"detail":"messages is invalid"}'))
+
+        client = LLMClient("qwen3-8b", "http://x/v1/chat/completions", {"temperature": 0, "max_tokens": 10},
+                           60, 0, 0)
+        with patch.object(client._opener, "open", side_effect=fake_open):
+            with self.assertRaises(ModelCallError) as caught:
+                client.chat([], "generate", CallBudget(6), [])
+        self.assertEqual(caught.exception.code, "MODEL_HTTP_ERROR")
+        self.assertEqual(client.stripped_params, [])
 
 
 if __name__ == "__main__":

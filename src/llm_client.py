@@ -8,6 +8,13 @@ import urllib.request
 from datetime import datetime, timezone
 
 RETRYABLE_HTTP = {408, 409, 425, 429, 500, 502, 503, 504}
+# 接口拒绝未知字段（vLLM 的 extra="forbid"）时的报错特征；用于自动摘掉不被接受的参数后重试
+UNSUPPORTED_HINTS = ("extra_forbidden", "extra fields", "unknown", "unrecognized", "unexpected",
+                     "not permitted", "invalid_request_error", "extra inputs")
+# 这些字段是 OpenAI 兼容层的核心字段，永不自动摘除
+STRICT_KEYS = {"model", "messages", "stream", "temperature", "max_tokens"}
+# 允许被自动摘除的可选字段（接口版本差异主要在这里）
+OPTIONAL_KEYS = ("chat_template_kwargs", "reasoning", "top_p", "seed", "response_format")
 
 
 def now_iso() -> str:
@@ -72,6 +79,8 @@ class LLMClient:
         self.backoff_s = backoff_s
         # 等价于 requests 的 trust_env=False：不读取系统代理配置
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self._drop_keys = set()          # 被接口 400 拒掉的参数，后续请求不再发送
+        self.stripped_params = []        # 写入 run_log，便于事后核对实际发出的参数
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -79,9 +88,23 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    def _strip_unsupported(self, detail: str) -> bool:
+        """接口对未知字段报 400 时，摘掉被点名的可选字段并返回 True（下次请求生效）。"""
+        low = detail.lower()
+        if not any(h in low for h in UNSUPPORTED_HINTS):
+            return False
+        removable = [k for k in self.gen_params if k not in STRICT_KEYS and k not in self._drop_keys]
+        named = [k for k in removable if k.lower() in low]
+        drop = named or [k for k in removable if k in OPTIONAL_KEYS]
+        if not drop:
+            return False
+        self._drop_keys.update(drop)
+        self.stripped_params = sorted(self._drop_keys)
+        return True
+
     def _build_body(self, messages, params=None):
         body = {"model": self.model_name, "messages": messages, "stream": False}
-        body.update(self.gen_params)
+        body.update({k: v for k, v in self.gen_params.items() if k not in self._drop_keys})
         if params:
             body.update(params)
         return body
@@ -117,6 +140,10 @@ class LLMClient:
                 rec["http_status"] = status
                 obj = json.loads(raw)
                 rec["usage"] = obj.get("usage")
+                # Thinking 是否真的关闭：vLLM 会回报推理 token 数
+                tokens = ((obj.get("usage") or {}).get("completion_tokens_details") or {}).get("reasoning_tokens")
+                if tokens:
+                    rec["reasoning_tokens"] = tokens
                 choice = obj["choices"][0]
                 rec["finish_reason"] = choice.get("finish_reason")
                 content = choice["message"].get("content")
@@ -139,6 +166,12 @@ class LLMClient:
                 rec["http_status"] = exc.code
                 last = ModelCallError("MODEL_HTTP_ERROR", f"HTTP {exc.code}: {detail}")
                 retryable = exc.code in RETRYABLE_HTTP
+                if exc.code == 400 and self._strip_unsupported(detail):
+                    # 参数不被该接口接受：摘掉后立刻重试一次，不等待退避
+                    rec["stripped_params"] = list(self.stripped_params)
+                    call_log.append(rec)
+                    attempt += 1
+                    continue
             except ModelCallError as exc:
                 last = exc
             except (socket.timeout, TimeoutError):

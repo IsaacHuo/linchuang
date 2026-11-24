@@ -9,17 +9,20 @@
 API_KEY、EMBED_ENDPOINT、EMBED_MODEL、EMBED_API_KEY 可选（未配置向量服务时检索自动退回 BM25）。
 
 退出码：0 全部处理完成（允许单条失败）；1 任务级运行错误；2 配置缺失或输入不符合协议。
+配置缺失时不会空手返回：仍按保底草稿写出 output.json / results.json（run_log 标注 fallback）。
+每完成一例即原子落盘一次，进程被外部时限中断也留得下可用结果。
 """
 import argparse
 import hashlib
 import logging
 import random
 import sys
+import time
 import traceback
 from pathlib import Path
 
 from src import config
-from src.case_io import InputError, read_cases, write_json_atomic
+from src.case_io import InputError, read_cases, write_json_atomic, write_results_alias
 from src.envfile import ConfigError, load_runtime_config
 from src.llm_client import LLMClient, now_iso
 from src.pipeline import MODES, Pipeline
@@ -76,10 +79,18 @@ def main(argv=None) -> int:
     run_log.update(input=str(input_path), output=str(output_path))
     exit_code = 1
     embedder = None
+
+    def flush(partial):
+        """增量落盘：每完成一例就原子重写一次，进程被外部时限掐掉也留得下可用结果。"""
+        if not config.INCREMENTAL_WRITE:
+            return
+        try:
+            write_json_atomic(output_path, partial)
+        except Exception as exc:
+            log.error("增量落盘失败：%s", exc)
+
     try:
         run_log_path.unlink(missing_ok=True)  # 避免残留旧日志与本次输出混淆
-        rt = load_runtime_config(config.ENV_FILE)
-        run_log.update(model_name=rt["model_name"], endpoint=rt["endpoint"])
         input_hash = hashlib.sha256(input_path.read_bytes()).hexdigest() if input_path.is_file() else None
         cases, notes = read_cases(input_path)
         if notes:
@@ -89,30 +100,54 @@ def main(argv=None) -> int:
         prompts = PromptSet(config.PROMPT_DIR)
         run_log["prompt_version"] = {"version": prompts.version, "files": prompts.hashes}
 
+        # 模型配置缺失时仍按保底草稿产出结果（退出码保持 2），避免整场空手
+        rt, client, retriever = None, None, None
+        try:
+            rt = load_runtime_config(config.ENV_FILE)
+            run_log.update(model_name=rt["model_name"], endpoint=rt["endpoint"])
+        except ConfigError as exc:
+            log.error("%s；本次只输出保底草稿", exc)
+            run_log["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            exit_code = 2
+
         use_rag = args.rag if args.rag is not None else (config.USE_RAG or args.mode == "improved+rag")
         if args.mode in ("baseline", "extract"):
             use_rag = False
-        retriever, embedder = _build_retriever(rt, use_rag, run_log) if cases else (None, None)
         fallback = False if args.no_fallback else config.ENABLE_FALLBACK
+        if rt is not None and cases:
+            retriever, embedder = _build_retriever(rt, use_rag, run_log)
         run_log["options"] = {"use_rag": bool(use_rag), "fallback": fallback,
                               "n_candidates": args.candidates or config.N_CANDIDATES}
-        log.info("模型 %s，病例 %d 例，模式 %s，检索 %s", rt["model_name"], len(cases), args.mode,
-                 run_log.get("retrieval", {}).get("method", "off"))
+        log.info("模型 %s，病例 %d 例，模式 %s，检索 %s", (rt or {}).get("model_name") or "（未配置）",
+                 len(cases), args.mode, run_log.get("retrieval", {}).get("method", "off"))
 
-        client = LLMClient(rt["model_name"], rt["endpoint"], config.GEN_PARAMS, config.REQUEST_TIMEOUT_S,
-                           config.MAX_RETRIES, config.RETRY_BACKOFF_S, api_key=rt.get("api_key"))
+        if rt is not None:
+            client = LLMClient(rt["model_name"], rt["endpoint"], config.GEN_PARAMS, config.REQUEST_TIMEOUT_S,
+                               config.MAX_RETRIES, config.RETRY_BACKOFF_S, api_key=rt.get("api_key"))
         pipeline = Pipeline(client, prompts, args.mode, retriever=retriever, embedder=embedder,
                             use_rag=use_rag, n_candidates=args.candidates, fallback=fallback)
-        results, case_logs = run_cases(cases, pipeline, config.CONCURRENCY)
+        deadline = time.monotonic() + config.TOTAL_BUDGET_S if config.TOTAL_BUDGET_S else None
+        results, case_logs = run_cases(cases, pipeline, config.CONCURRENCY, on_result=flush, deadline=deadline)
         for lg in case_logs:
             log.info("%s -> %s%s（调用 %d 次，%.1fs）", lg["case_id"], lg["status"],
                      "（保底）" if lg.get("fallback") else "", lg["model_calls"], lg["duration_s"])
         write_json_atomic(output_path, results)
+        if config.WRITE_RESULTS_ALIAS:
+            try:
+                alias = write_results_alias(output_path, results)
+                if alias is not None:
+                    run_log["results_alias"] = str(alias)
+            except Exception as exc:
+                log.error("results.json 写入失败（不影响 output.json）：%s", exc)
+        if client is not None and getattr(client, "stripped_params", None):
+            run_log["stripped_params"] = client.stripped_params
+            log.warning("接口拒绝了这些参数，已自动摘除后重试：%s", client.stripped_params)
         run_log["input_sha256"] = input_hash
         run_log["output_sha256"] = hashlib.sha256(output_path.read_bytes()).hexdigest()
         run_log["cases"] = case_logs
         run_log["summary"] = summarize(results, case_logs)
-        exit_code = 0
+        if exit_code != 2:
+            exit_code = 0
     except (ConfigError, InputError) as exc:
         log.error("%s", exc)
         run_log["error"] = {"type": type(exc).__name__, "message": str(exc)}
@@ -130,8 +165,8 @@ def main(argv=None) -> int:
         try:
             write_json_atomic(run_log_path, run_log)
         except Exception as exc:
-            log.error("run_log.json 写入失败：%s", exc)
-            exit_code = 1
+            # 结果文件已经写好，日志写不进去不应把整体退出码改成失败
+            log.error("run_log.json 写入失败（不影响结果文件）：%s", exc)
     return exit_code
 
 

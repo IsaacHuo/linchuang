@@ -64,6 +64,8 @@ class E2E(unittest.TestCase):
         inp.write_text(text, encoding="utf-8")
         proc = subprocess.run(cmd + list(args or []), cwd=cwd, capture_output=True, timeout=300)
         output = json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
+        alias = out.parent / "results.json"
+        self.last_alias = json.loads(alias.read_text(encoding="utf-8")) if alias.exists() else None
         log = json.loads((out.parent / "run_log.json").read_text(encoding="utf-8"))
         leftovers = [p.name for p in out.parent.glob("*.tmp")]
         self.assertEqual(leftovers, [])
@@ -80,6 +82,8 @@ class E2E(unittest.TestCase):
         self.assertEqual(len(log["input_sha256"]), 64)
         self.assertEqual(len(log["output_sha256"]), 64)
         self.assertNotIn("Authorization", json.dumps(log))
+        # 评测预检可能读 results.json，两份内容必须一致
+        self.assertEqual(self.last_alias, out)
 
     def test_legacy_entry(self):
         code, out, _ = self.run_main(CASES[:1], new_entry=False)
@@ -100,9 +104,16 @@ class E2E(unittest.TestCase):
         self.assertEqual((code, out), (0, []))
 
     def test_missing_env(self):
+        # 配置缺失退出码仍为 2，但不能空手返回：必须落一份保底草稿
         code, out, log = self.run_main(CASES[:1], env=False)
         self.assertEqual(code, 2)
-        self.assertIsNone(out)
+        self.assertIsNotNone(out)
+        self.assertEqual([r["case_id"] for r in out], [CASES[0]["case_id"]])
+        self.assertEqual(out[0]["status"], "success")
+        self.assertTrue(out[0]["medical_record"])
+        self.assertTrue(log["cases"][0]["fallback"])
+        self.assertEqual(log["cases"][0]["fallback_reason"]["code"], "NO_MODEL_CONFIG")
+        self.assertEqual(log["error"]["type"], "ConfigError")
         self.assertEqual(log["exit_code"], 2)
 
     def test_duplicate_case_id(self):

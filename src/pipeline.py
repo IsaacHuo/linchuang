@@ -111,6 +111,8 @@ class Pipeline:
         return self.client.chat(messages, purpose, budget, log["calls"])
 
     def process(self, case: dict):
+        if self.client is None:  # 未配置模型接口：不调用模型，只产出保底草稿
+            return self.fallback_only(case)
         case_id = case.get("case_id")
         log = {"case_id": case_id, "mode": self.mode, "started_at": now_iso(), "calls": [], "steps": [],
                "fallback": False}
@@ -141,6 +143,29 @@ class Pipeline:
         log.update(fallback=True, fallback_reason=failed["error"], validation_final=_codes(issues))
         return {"case_id": case["case_id"], "status": "success",
                 "medical_record": {k: rec[k] for k in RECORD_FIELDS}, "error": None}
+
+    def _no_model(self, case, code, message):
+        """不发起任何模型调用，直接用资料原文拼保底草稿（配置缺失、超过总时限时使用）。"""
+        case_id = case.get("case_id")
+        log = {"case_id": case_id, "mode": self.mode, "started_at": now_iso(), "calls": [], "steps": [],
+               "fallback": False}
+        t0 = time.monotonic()
+        bad = check_case(case)
+        if bad:
+            res = _failed(case_id, "INVALID_CASE", bad)
+        else:
+            res = self._fallback(case, log, {"error": {"code": code, "message": message}})
+            if res["status"] == "failed":
+                res = _failed(case_id, code, message + "；保底草稿仍未通过校验")
+        log.update(status=res["status"], error=res["error"], finished_at=now_iso(),
+                   duration_s=round(time.monotonic() - t0, 3), model_calls=0)
+        return res, log
+
+    def fallback_only(self, case):
+        return self._no_model(case, "NO_MODEL_CONFIG", "未配置模型接口，按保底草稿输出")
+
+    def deadline_result(self, case):
+        return self._no_model(case, "TOTAL_TIME_BUDGET", "已达到总运行时限，按保底草稿输出")
 
     def _process(self, case, log):
         case_id = case["case_id"]

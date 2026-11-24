@@ -2,27 +2,58 @@
 import hashlib
 import platform
 import sys
+import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import config
 from .llm_client import now_iso
 
 
-def run_cases(cases, pipeline, concurrency: int = 1):
-    """按输入顺序返回 (results, case_logs)；单例失败不影响其他病例。"""
+def materialize(results, cases) -> list:
+    """把尚未完成的槽位填成明确的中间态记录，保证任何时刻落盘的文件都符合输出协议。"""
+    out = []
+    for case, res in zip(cases, results):
+        out.append(res if res is not None else {
+            "case_id": case.get("case_id"),
+            "status": "failed",
+            "medical_record": None,
+            "error": {"code": "NOT_PROCESSED", "message": "该病例尚未生成（本次落盘的中间状态）"},
+        })
+    return out
+
+
+def run_cases(cases, pipeline, concurrency: int = 1, on_result=None, deadline=None):
+    """按输入顺序返回 (results, case_logs)；单例失败不影响其他病例。
+
+    on_result(partial)：每完成一例回调一次，用于增量落盘（进程被中断也留得下结果）；
+    deadline：time.monotonic() 截止点，超过后剩余病例直接走保底，不再调用模型。
+    """
     if not cases:
         return [], []
+    results, logs = [None] * len(cases), [None] * len(cases)
+
+    def run_one(case):
+        if deadline is not None and time.monotonic() > deadline:
+            return pipeline.deadline_result(case)
+        return pipeline.process(case)
+
+    def record(idx, pair):
+        res, lg = pair
+        lg["index"] = idx
+        results[idx] = res
+        logs[idx] = lg
+        if on_result is not None:
+            on_result(materialize(results, cases))
+
     if concurrency <= 1:
-        pairs = [pipeline.process(c) for c in cases]
+        for idx, case in enumerate(cases):
+            record(idx, run_one(case))
     else:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            pairs = list(pool.map(pipeline.process, cases))
-    results, logs = [], []
-    for idx, (res, lg) in enumerate(pairs):
-        lg["index"] = idx
-        results.append(res)
-        logs.append(lg)
+            futures = {pool.submit(run_one, case): idx for idx, case in enumerate(cases)}
+            for fut in as_completed(futures):
+                record(futures[fut], fut.result())
     return results, logs
 
 
